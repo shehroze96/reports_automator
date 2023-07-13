@@ -15,8 +15,12 @@ def create_conn_redshift(*args, **kwargs):
         port = config['port'],
         user = config['user'],
         password = config['password'],
-        database = config['database']
-        
+        database = config['database'],
+        keepalives= 1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        sslmode='require'
     )
         return conn
     except Exception as err:
@@ -31,8 +35,12 @@ def create_conn_postgre(*args, **kwargs):
         port = config['port'],
         user = config['user'],
         password = config['password'],
-        database = config['database']
-        
+        database = config['database'],
+        keepalives= 1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        sslmode='require'
     )
         return conn
     except Exception as err:
@@ -44,6 +52,68 @@ def schema_name_query(env: str, account_id: str, dog: str) -> str:
     return f"""SELECT nspname
                FROM pg_catalog.pg_namespace
                where nspname like {dog} '%{env}_{account_id}%';"""
+
+
+def create_amended_msft_query(schema: str, start_date: str, end_date: str, **kwargs):
+    query_without_advisor_id = f"""select           
+           to_char(day, 'YYYY-MM-01')            as month,
+           coalesce(sum(advisor_starts), 0)         as visit_count_sum,
+           coalesce(sum(engaged_advisor_starts), 0) as engaged_visit_sum,
+           case
+               when sum(visits_counted_to_avg) > 0 then sum(avg_visit_time * visits_counted_to_avg) /
+                                                        sum(visits_counted_to_avg)
+               else 0 end                        as avg_visit_time,
+          coalesce(sum(revenue_referred), 0)            as revenue_referred_sum,
+          coalesce(sum(revenue_generated), 0)           as revenue_generated_sum,
+           case
+               when sum(engaged_visit_count) > 0 then sum(clicked_out_visit_count) / sum(engaged_visit_count)
+               else 0 end                        as click_through_rate,
+       case
+           when sum(visit_count) > 0 then sum(engaged_visit_count) / sum(visit_count)
+           else 0 end                                as engagement_rate,
+      (case when coalesce(sum(engaged_visit_count),0) > 0 then coalesce(sum(completed_visit_count), 0)::numeric / sum(engaged_visit_count) else 0 end) as completion_rate,
+       case when sum(engaged_visit_count)>0 then sum(clicked_out_visit_count)/sum(engaged_visit_count) else 0 end as click_through_rate
+               from  {schema}.basic_aggregations   -- replace the schema name per each account
+    where day >= '{start_date}' and day <= '{end_date}' --and advisor_id = '10929'  --uncomment the advisor id for Xcite and US-ST and replace with the appropriate id
+    group by month;"""
+
+    query_with_advisor_id = f"""select           
+           to_char(day, 'YYYY-MM-01')            as month,
+           coalesce(sum(advisor_starts), 0)         as visit_count_sum,
+           coalesce(sum(engaged_advisor_starts), 0) as engaged_visit_sum,
+           case
+               when sum(visits_counted_to_avg) > 0 then sum(avg_visit_time * visits_counted_to_avg) /
+                                                        sum(visits_counted_to_avg)
+               else 0 end                        as avg_visit_time,
+          coalesce(sum(revenue_referred), 0)            as revenue_referred_sum,
+          coalesce(sum(revenue_generated), 0)           as revenue_generated_sum,
+           case
+               when sum(engaged_visit_count) > 0 then sum(clicked_out_visit_count) / sum(engaged_visit_count)
+               else 0 end                        as click_through_rate,
+       case
+           when sum(visit_count) > 0 then sum(engaged_visit_count) / sum(visit_count)
+           else 0 end                                as engagement_rate,
+      (case when coalesce(sum(engaged_visit_count),0) > 0 then coalesce(sum(completed_visit_count), 0)::numeric / sum(engaged_visit_count) else 0 end) as completion_rate,
+       case when sum(engaged_visit_count)>0 then sum(clicked_out_visit_count)/sum(engaged_visit_count) else 0 end as click_through_rate
+               from  {schema}.basic_aggregations   -- replace the schema name per each account
+    where day >= '{start_date}' and day <= '{end_date}' and advisor_id = '{kwargs['advisor_id']}' --uncomment the advisor id for Xcite and US-ST and replace with the appropriate id
+    group by month;"""
+    # if advisor_id is empty 
+    # return query with advisor_id commented out so it will not be applied
+    # in cases where it is provided so advisor_id is valid then return query with advisor uncommented
+
+    # check if we have advisor_id in kwargs
+    if 'advisor_id' in kwargs:
+        advisor_id = kwargs['advisor_id']
+        # check if advisor_id is empty, if it is return error about empty id
+        if advisor_id == '':
+            return query_without_advisor_id
+        # if not empty return the query with the advisor_id inserted from the input
+        else:
+            return query_with_advisor_id
+    # when advisor id has no value or the argument has not been put in
+    else:
+        return query_with_advisor_id
 
 
 def msft_reports_query(schema: str, start_date: str, end_date: str, **kwargs):
@@ -84,6 +154,7 @@ def msft_reports_query(schema: str, start_date: str, end_date: str, **kwargs):
     select *
     from basic_aggregations_part
             join conversion_completion_rate_part using (month);"""
+    
     query_with_advisor_id = f"""with basic_aggregations_part as (
     select           
            to_char(day, 'YYYY-MM-01')            as month,
@@ -143,12 +214,11 @@ def msft_reports_query(schema: str, start_date: str, end_date: str, **kwargs):
 
     
 
-def us_st_msft_reports_query():
-    return "this is a function to handle us-st queries"
 
 
 
-# print(msft_reports_query(schema='SHALALALLALALALALALALLALALAH', start_date= '2021-08-01', end_date= '2021-08-31', advisor_id= '2234'))
+
+# print(msft_reports_query(schema='test', start_date= '2021-08-01', end_date= '2021-08-31', advisor_id= '2234'))
 
 
 # regionn = None # 0
@@ -184,7 +254,7 @@ def form_queries(filepath, start, end):
                 if 'us-st' in filepath:
                     query_for_account = msft_reports_query(schema='st_us_862_8187de6d26a718dc09217dde3491e4fb', start_date=start, end_date=end, advisor_id= row[4])
                 else:
-                    query_for_account = msft_reports_query(schema=row[5], start_date=start, end_date=end, advisor_id= row[4])
+                    query_for_account = create_amended_msft_query(schema=row[5], start_date=start, end_date=end, advisor_id= row[4])
                 if file_name == "Microsft US" and 'us-st' in filepath:
                     pass
                 else:
@@ -239,18 +309,22 @@ def run_query(queries_dict, conn, month, directory):
         cursor = conn.cursor()
 
         # execute the query the value from v is what is needed
-        cursor.execute(v)
+        try:
+            cursor.execute(v)
+            # get the first row and treat these at the headers for the document
+            headers = [i[0] for i in cursor.description]
 
-        # get the first row and treat these at the headers for the document
-        headers = [i[0] for i in cursor.description]
+            # write these headers to the file
+            outputWriter.writerow(headers)
+            # write all the rows of the query to the file
+            for row in cursor:
+                outputWriter.writerow(row)
 
-        # write these headers to the file
-        outputWriter.writerow(headers)
-        # write all the rows of the query to the file
-        for row in cursor:
-            outputWriter.writerow(row)
+            outputFile.close()
+        except Exception as err:
+              pass   
 
-        outputFile.close()
+        
 
         # pause the execution here to give us some time
         fifteen_second_delay()
